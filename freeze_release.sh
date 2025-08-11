@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+<<<<<<< HEAD
 # ========= Config por defecto =========
 REMOTE="${REMOTE:-origin}"
 BRANCH="${BRANCH:-main}"
@@ -102,3 +103,57 @@ git push "$REMOTE" "${TAG}"
 
 echo "✅ Listo. Versión congelada: ${TAG}"
 echo "   Podés ver el historial en RELEASES.md"
+=======
+# Config
+DEFAULT_BRANCH="main"
+
+# Parámetros
+LABEL="${1:-}"  # opcional, p.ej.: ./freeze_release.sh "post-csv-fix"
+
+# Preflight
+git rev-parse --is-inside-work-tree >/dev/null 2>&1 || { echo "❌ No estás dentro de un repo git"; exit 1; }
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+cd "$REPO_ROOT"
+
+REMOTE_URL="$(git remote get-url origin 2>/dev/null || true)"
+[[ -n "$REMOTE_URL" ]] || { echo "❌ No existe el remoto 'origin'. Configuralo: git remote add origin <URL>"; exit 1; }
+
+CURR_BRANCH="$(git rev-parse --abbrev-ref HEAD)"
+echo "📦 Repo: $REPO_ROOT"
+echo "🌿 Rama actual: $CURR_BRANCH"
+echo "🔗 Remoto: $REMOTE_URL"
+
+# Traer última versión del remoto y rebase
+echo "⬇️  Fetch + rebase..."
+git fetch origin
+git pull --rebase origin "$CURR_BRANCH" || { echo "❌ Resolvé conflictos y reintentá"; exit 1; }
+
+# Staging y commit si hay cambios
+echo "📝 Preparando commit..."
+git add -A
+
+if ! git diff --cached --quiet; then
+  MSG="chore: freeze $CURR_BRANCH $(date '+%Y-%m-%d %H:%M %Z')"
+  [[ -n "$LABEL" ]] && MSG="$MSG — $LABEL"
+  git commit -m "$MSG"
+  echo "✅ Commit creado"
+else
+  echo "ℹ️  No hay cambios para commitear"
+fi
+
+# Push rama
+echo "🚀 Push rama $CURR_BRANCH..."
+git push -u origin "$CURR_BRANCH"
+
+# Crear tag con fecha/hora (UTC) + label opcional
+TAG="v$(date -u '+%Y%m%d-%H%M')"
+[[ -n "$LABEL" ]] && TAG="${TAG}-${LABEL// /-}"
+
+echo "🏷️  Creando tag $TAG..."
+git tag -a "$TAG" -m "Freeze $CURR_BRANCH @ $(date -u '+%Y-%m-%d %H:%M UTC')${LABEL:+ — $LABEL}"
+git push origin "$TAG"
+
+echo "🎉 Listo:"
+echo "   • Rama: $CURR_BRANCH (pusheada)"
+echo "   • Tag : $TAG (pusheado)"
+>>>>>>> 72bcc53 (chore: add local freeze_release.sh)
