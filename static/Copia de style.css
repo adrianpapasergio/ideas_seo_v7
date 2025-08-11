@@ -1,0 +1,87 @@
+:root {
+  --scidata-purple: #6C306D;
+  --scidata-light:  #eef3f8;
+}
+body { margin:0; font-family:'Segoe UI',sans-serif; background:var(--scidata-light); color:#333; }
+.container { max-width:900px; margin:0 auto; padding:20px; }
+.header { position:relative; background:#fff; padding:20px;text-align:center; box-shadow:0 2px 4px rgba(0,0,0,0.1); }
+.logo-header { position:absolute; top:20px; left:20px; height:60px; }
+.header-title { margin:0;font-size:2rem;color:var(--scidata-purple); }
+.header-subtitle { margin:8px 0 0;font-size:0.9rem;color:#666; }
+.btn-logout { position:absolute; top:20px; right:20px;background:var(--scidata-purple);color:#fff;padding:8px 16px;border-radius:6px;text-decoration:none;font-size:0.9rem; }
+.card { background:#fff;border-radius:8px;padding:20px;margin-bottom:20px; box-shadow:0 2px 8px rgba(0,0,0,0.05); }
+.card-heading { margin-top:0;color:var(--scidata-purple);font-size:1.2rem; }
+.ideas { display:flex; flex-direction:column; gap:24px; margin-top:32px; }
+.idea-block { background:#fff; border-radius:8px;box-shadow:0 2px 8px rgba(0,0,0,0.05);padding:20px; }
+.idea-title { margin:0 0 12px;font-size:1.25rem;color:var(--scidata-purple); }
+.idea-list li { margin-bottom:6px;line-height:1.4; }
+.btn-write { background:var(--scidata-purple);color:#fff;padding:10px 16px;border:none;border-radius:6px;cursor:pointer;transition:background .2s; }
+.btn-write:hover { background:#53184f; }
+.article-container { margin-top:20px;opacity:0;max-height:0;overflow:hidden;transition:opacity .3s,max-height .4s; }
+.article-container.article-visible { opacity:1;max-height:2000px; }
+.loading { color:#666;font-style:italic; }
+.error { color:#d32f2f; }
+.login-page { display:flex; align-items:center; justify-content:center; height:100vh; background:var(--scidata-light); }
+.login-wrapper { max-width:400px; width:100%; padding:0 20px; }
+.login-card { background:#fff; border-radius:10px; padding:50px 20px; box-shadow:0 4px 16px rgba(0,0,0,0.1); text-align:center; }
+.login-logo { width:140px; margin-bottom:24px; }
+.login-title { font-size:1.75rem; color:var(--scidata-purple); margin:0 0 30px; font-weight:600; }
+.login-form label { display:block; margin-bottom:6px; font-size:0.9rem; color:#333; }
+.login-form input { width:100%; padding:14px; margin-bottom:20px; font-size:1rem; border:1px solid #ccc; border-radius:6px; box-sizing:border-box; }
+.login-btn { width:100%; padding:14px; font-size:1rem; background:var(--scidata-purple); color:#fff; border:none; border-radius:6px; cursor:pointer; transition:background .2s; }
+.login-btn:hover { background:#53184f; }
+.login-footer { margin-top:30px; font-size:0.85rem; color:#888; }
+.footer { background:#fff; text-align:center; padding:20px 0; margin-top:40px; font-size:0.9rem; color:#666; }
+.footer a { color:var(--scidata-purple); text-decoration:none; margin:0 4px; }
+/* — Spinner en botón — */
+.spinner {
+  display: inline-block;
+  width: 16px;
+  height: 16px;
+  border: 2px solid #fff;
+  border-top: 2px solid rgba(255,255,255,0.3);
+  border-radius: 50%;
+  animation: spin 0.6s linear infinite;
+  margin-right: 6px;
+}
+.hidden {
+  display: none;
+}
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+/* — Toast/Snackbar — */
+#toast-container {
+  position: fixed;
+  bottom: 20px;
+  right: 20px;
+  z-index: 10000;
+}
+.toast {
+  background: rgba(0, 0, 0, 0.8);
+  color: #fff;
+  padding: 12px 18px;
+  border-radius: 6px;
+  margin-top: 8px;
+  font-size: 0.9rem;
+  opacity: 0;
+  animation:
+    fadein 0.3s forwards,
+    fadeout 0.3s 2.4s forwards;
+}
+@keyframes fadein {
+  from { opacity: 0; transform: translateY(10px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+@keyframes fadeout {
+  from { opacity: 1; }
+  to   { opacity: 0; }
+}
+
+/* Ajustes para botón write */
+.btn-write {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}

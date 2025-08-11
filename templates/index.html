@@ -1,0 +1,629 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <title>Generador de Ideas SEO Inteligente – SciData</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+
+  <div id="toast-container"></div>
+
+  <header class="header">
+    <img src="{{ url_for('static', filename='logo_scidata.png') }}" alt="SciData" class="logo-header">
+    <h1 class="header-title">Generador de Ideas SEO Inteligente</h1>
+    <a href="{{ url_for('logout') }}" class="btn-logout">Cerrar sesión</a>
+    <p class="header-subtitle">Potenciado por OpenAI · Versión Profesional</p>
+  </header>
+
+  <main class="container">
+    <div class="dashboard-summary">
+      <p><strong>Hola, {{ nombre_usuario }} 👋</strong></p>
+      <p>Generaste <strong>{{ total_ideas }}</strong> ideas y escribiste <strong>{{ total_articulos }}</strong> artículos. ¿Listo para seguir creando contenido?</p>
+    </div>
+
+    <!-- FORMULARIO -->
+    <section class="card form-card">
+      <form id="keyword-form" method="POST" action="{{ url_for('dashboard') }}" class="form-inline">
+        <div class="form-group small">
+          <label for="pais">País</label>
+          <select id="pais" name="pais" required>
+            <option>Argentina</option>
+            <option>México</option>
+            <option>Colombia</option>
+            <option>Chile</option>
+          </select>
+        </div>
+        <div class="form-group wide">
+          <input id="keyword" name="keyword" type="text" placeholder="Ej: cómo pagar AFIP" required>
+        </div>
+        <button id="btn-gen-keyword" type="submit" class="btn-write full-width mt-large">
+          <span class="spinner hidden"></span>
+          <span class="btn-text">🚀 Generar ideas</span>
+        </button>
+      </form>
+    </section>
+
+    <!-- CSV -->
+    <section class="card csv-card">
+      <h2 class="card-heading">Subí tu archivo CSV con tendencias</h2>
+      <form id="csv-form" method="POST" action="{{ url_for('dashboard') }}" enctype="multipart/form-data">
+        <label for="csv" class="csv-label">Archivo CSV</label>
+        <div class="csv-uploader">
+          <input id="csv" name="csv" type="file" accept=".csv" class="csv-input">
+          <span class="csv-text">Sin archivos seleccionados</span>
+        </div>
+        <small class="csv-info">Debe contener columnas: <code>pais,tendencia</code>.</small>
+        <button id="btn-gen-csv" type="submit" class="btn-write full-width mt-large" disabled>
+          <span class="spinner hidden"></span>
+          <span class="btn-text">🚀 Generar ideas</span>
+        </button>
+      </form>
+    </section>
+
+    {% if ideas %}
+    <div class="ideas">
+      {% for idea in ideas %}
+      <div class="idea-block" data-keyword="{{ idea.keyword }}">
+        <h3 class="idea-title">{{ idea.titulo }}</h3>
+        <ul class="idea-list">
+          <li><strong>🔑 Palabras clave:</strong> {{ idea.palabras_clave|join(', ') }}</li>
+          <li><strong>📑 Subtítulos:</strong> {{ idea.h2_sugeridos|join(', ') }}</li>
+          <li><strong>💡 Tips SEO:</strong> {{ idea.tips_seo|join('; ') }}</li>
+        </ul>
+
+        <button class="btn-write btn-generar" data-keyword="{{ idea.keyword }}">
+          <span class="spinner hidden"></span>
+          <span class="btn-text">✍️ Escribir artículo</span>
+        </button>
+        <button class="btn-delete-idea" data-keyword="{{ idea.keyword }}">🗑️ Eliminar</button>
+
+        <!-- Contenedor legacy (no se usa para mostrar, lo dejamos vacío) -->
+        <div class="article-container"></div>
+
+        <div class="export-buttons-block hidden">
+          <button class="btn-write export-btn btn-export-csv">📥 CSV</button>
+          <button class="btn-write export-btn btn-export-md">📝 MD</button>
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+    {% endif %}
+  </main>
+
+  <footer class="footer">
+    <p>Desarrollado por SciData · Gustavo Papasergio – CMO</p>
+    <p>📧 <a href="mailto:gustavo@scidata.com.ar">gustavo@scidata.com.ar</a> · 🌐 <a href="https://scidata.com.ar">scidata.com.ar</a> · 📅 <a href="https://calendly.com/gpapasergio/30min">Agendá una reunión</a></p>
+  </footer>
+
+  <script>
+    // Ideas del backend
+    window.scidataIdeas = {{ ideas|tojson }};
+
+    // --- Toast mínimo ---
+    function showToast(msg) {
+      const t = document.createElement('div');
+      t.textContent = msg;
+      t.style.cssText = 'position:fixed;right:16px;bottom:16px;background:#333;color:#fff;padding:10px 14px;border-radius:8px;opacity:.95;z-index:9999';
+      document.body.appendChild(t);
+      setTimeout(()=>{ t.remove(); }, 2200);
+    }
+    window.showToast = showToast;
+
+    // ✅ Limpia respuestas que vienen envueltas en ```html ... ```
+    function cleanModelHtml(str) {
+      if (!str) return '';
+      // Si viene un bloque fenced, extrae su interior
+      const fenced = str.match(/```(?:html|HTML)?\s*([\s\S]*?)\s*```/);
+      if (fenced) return fenced[1].trim();
+      // Si sólo trae el "```html" inicial o los backticks sueltos
+      return str
+        .replace(/^```(?:html|HTML)?\s*/,'')
+        .replace(/```$/,'')
+        .trim();
+    }
+
+    // --- Badges ---
+    function setItemBadge(headerEl, estado, createdAt) {
+      const old = headerEl.querySelector('.state-badge');
+      if (old) old.remove();
+      const b = renderBadge(estado, createdAt);
+      b.className = 'state-badge';
+      headerEl.appendChild(b);
+    }
+
+    function renderBadge(estado, createdAt) {
+      const span = document.createElement('span');
+      span.style.cssText = 'margin-left:8px;font-size:.7rem;padding:2px 6px;border-radius:12px;color:#fff;';
+      let isNuevo = false;
+      try {
+        if (createdAt) {
+          const d = new Date(createdAt);
+          const today = new Date();
+          isNuevo = d.toDateString() === today.toDateString();
+        } else {
+          isNuevo = true;
+        }
+      } catch {}
+      if (estado === 'publicado') {
+        span.textContent = 'Publicado';
+        span.style.backgroundColor = '#2e7d32';
+      } else if (estado === 'revisado') {
+        span.textContent = 'En revisión';
+        span.style.backgroundColor = '#f9a825';
+        span.style.color = '#242424';
+      } else if (estado === 'archivado') {
+        span.textContent = 'Archivado';
+        span.style.backgroundColor = '#795548';
+      } else {
+        span.textContent = isNuevo ? 'Nuevo' : 'Borrador';
+        span.style.backgroundColor = isNuevo ? '#1976d2' : '#546e7a';
+      }
+      return span;
+    }
+
+    // === Item de artículo (título + preview + acordeón + estado + eliminar) ===
+    function appendArticleItem(block, artObj, { force = false } = {}) {
+      const list = block.querySelector('.articles-list') || (() => {
+        const ul = document.createElement('ul');
+        ul.className = 'articles-list';
+        ul.style.listStyle = 'none';
+        ul.style.padding = '0';
+        ul.style.marginTop = '6px';
+        block.insertBefore(ul, block.querySelector('.article-container'));
+        return ul;
+      })();
+
+      // dedupe salvo que sea "force"
+      const cleanedHtml = cleanModelHtml(artObj.html || '');
+      const sig = cleanedHtml.slice(0, 120);
+      if (!force && sig && list.querySelector(`li[data-sig="${CSS.escape(sig)}"]`)) {
+        return;
+      }
+
+      const li = document.createElement('li');
+      li.style.margin = '6px 0 10px 0';
+      li.dataset.articleId = artObj.id || '';
+      li.dataset.sig = sig;
+
+      // animación de entrada
+      li.style.opacity = '0';
+      li.style.transform = 'translateY(-4px)';
+      li.style.transition = 'opacity .18s ease, transform .18s ease';
+      requestAnimationFrame(() => {
+        li.style.opacity = '1';
+        li.style.transform = 'translateY(0)';
+      });
+
+      const header = document.createElement('div');
+      header.style.display = 'flex';
+      header.style.alignItems = 'center';
+      header.style.gap = '8px';
+      header.style.flexWrap = 'wrap';
+
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.textContent = '▼ Ver';
+      btn.style.cssText = 'font-size:.9rem;background:#f6f7f9;border:1px solid #dcdfe4;border-radius:6px;padding:4px 8px;cursor:pointer;';
+
+      const hTitle = document.createElement('span');
+      hTitle.textContent = artObj.titulo || 'Artículo';
+      hTitle.style.fontWeight = '600';
+
+      header.appendChild(btn);
+      header.appendChild(hTitle);
+
+      // badge
+      setItemBadge(header, artObj.estado, artObj.created_at);
+
+      // selector de estado
+      const sel = document.createElement('select');
+      sel.innerHTML = `
+        <option value="borrador">Borrador</option>
+        <option value="revisado">En revisión</option>
+        <option value="publicado">Publicado</option>
+        <option value="archivado">Archivado</option>
+      `;
+      sel.value = artObj.estado || 'borrador';
+      sel.style.cssText = 'margin-left:8px;padding:2px 6px;border:1px solid #dcdfe4;border-radius:6px;font-size:.8rem;background:#fff;';
+      header.appendChild(sel);
+
+      // preview
+      const previewText = cleanedHtml.replace(/<[^>]+>/g,' ').replace(/\s+/g,' ').trim();
+      if (previewText) {
+        const prev = document.createElement('span');
+        prev.textContent = ' — ' + previewText.slice(0,140) + (previewText.length>140?'…':'');
+        prev.style.color = '#666';
+        prev.style.fontSize = '.9rem';
+        header.appendChild(prev);
+      }
+
+      // botón eliminar artículo
+      const del = document.createElement('button');
+      del.type = 'button';
+      del.textContent = '🗑️';
+      del.title = 'Eliminar este artículo';
+      del.style.cssText = 'margin-left:auto;border:1px solid #e57373;background:#ffebee;border-radius:6px;padding:2px 8px;cursor:pointer;';
+      header.appendChild(del);
+
+      // cuerpo
+      const body = document.createElement('div');
+      body.style.display = 'none';
+      body.style.marginTop = '6px';
+      body.innerHTML = cleanedHtml;
+
+      btn.addEventListener('click', () => {
+        const hidden = body.style.display === 'none';
+        body.style.display = hidden ? '' : 'none';
+        btn.textContent = hidden ? '▲ Ocultar' : '▼ Ver';
+      });
+
+      // cambio de estado (persistente)
+      sel.addEventListener('change', async () => {
+        const newEstado = sel.value;
+        try {
+          const kw = block.dataset.keyword;
+          const id = li.dataset.articleId;
+          const r = await fetch('{{ url_for("api_cambiar_estado_articulo") }}', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ keyword: kw, id, estado: newEstado })
+          });
+          const j = await r.json();
+          if (j && j.ok) {
+            artObj.estado = newEstado;
+            setItemBadge(header, newEstado, artObj.created_at);
+            showToast('Estado actualizado');
+          } else {
+            sel.value = artObj.estado || 'borrador';
+            showToast('No se pudo actualizar el estado');
+          }
+        } catch (e) {
+          console.error('Error al cambiar estado:', e);
+          sel.value = artObj.estado || 'borrador';
+          showToast('Error de red al cambiar estado');
+        }
+      });
+
+      // eliminar artículo (persistente)
+      del.addEventListener('click', async () => {
+        const kw = block.dataset.keyword;
+        const id = li.dataset.articleId;
+        if (!confirm('¿Eliminar este artículo?')) return;
+        try {
+          const r = await fetch('{{ url_for("api_eliminar_articulo") }}', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ keyword: kw, id })
+          });
+          const j = await r.json();
+          if (j && j.ok) {
+            li.remove();
+            await refreshCounters(); // no decrementa histórico, solo refresca
+            showToast('Artículo eliminado');
+          } else {
+            showToast('No se pudo eliminar el artículo');
+          }
+        } catch (e) {
+          console.error('Error al eliminar artículo:', e);
+          showToast('Error de red al eliminar');
+        }
+      });
+
+      li.appendChild(header);
+      li.appendChild(body);
+
+      if (list.firstChild) list.insertBefore(li, list.firstChild);
+      else list.appendChild(li);
+    }
+
+    // === Skeleton mientras se genera ===
+    function addGeneratingSkeleton(block) {
+      const list = block.querySelector('.articles-list') || (() => {
+        const ul = document.createElement('ul');
+        ul.className = 'articles-list';
+        ul.style.listStyle = 'none';
+        ul.style.padding = '0';
+        ul.style.marginTop = '6px';
+        block.insertBefore(ul, block.querySelector('.article-container'));
+        return ul;
+      })();
+
+      const li = document.createElement('li');
+      li.className = 'article-skeleton sk-skeleton';
+      li.dataset.skelId = String(Date.now());
+      li.style.margin = '6px 0 10px 0';
+
+      const header = document.createElement('div');
+      header.style.display = 'flex';
+      header.style.alignItems = 'center';
+      header.style.gap = '8px';
+      header.style.flexWrap = 'wrap';
+
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.disabled = true;
+      btn.textContent = '⏳ Generando…';
+      btn.className = 'sk-btn';
+      btn.style.cssText = 'font-size:.9rem;background:#f6f7f9;border:1px solid #dcdfe4;border-radius:6px;padding:4px 8px;';
+
+      const makeBar = (w, isTitle=false) => {
+        const b = document.createElement('div');
+        b.className = 'sk-bar' + (isTitle ? ' sk-title' : '');
+        b.style.width = w;
+        return b;
+      };
+
+      const body = document.createElement('div');
+      body.style.marginTop = '6px';
+      body.appendChild(makeBar('40%', true));
+      body.appendChild(makeBar('60%'));
+      body.appendChild(makeBar('80%'));
+
+      header.appendChild(btn);
+      li.appendChild(header);
+      li.appendChild(body);
+
+      if (list.firstChild) list.insertBefore(li, list.firstChild);
+      else list.appendChild(li);
+
+      li.scrollIntoView({ block: 'nearest' });
+      return li;
+    }
+
+    function removeGeneratingSkeleton(skelNode) {
+      try {
+        if (skelNode && skelNode.remove) skelNode.remove();
+        else document.querySelector('.article-skeleton')?.remove();
+      } catch(e) {}
+    }
+
+    // === Render de artículos guardados ===
+    function renderSavedArticles() {
+      try {
+        const ideas = (window.scidataIdeas || []);
+        const norm = s => (s || '').trim().toLowerCase();
+        const byKeyword = new Map(ideas.map(i => [norm(i.keyword), i]));
+
+        document.querySelectorAll('.idea-block').forEach(block => {
+          const kw = norm(block.dataset.keyword);
+          const idea = byKeyword.get(kw);
+          if (!idea) return;
+
+          const legacy = idea.articulo ? [{
+            id: 'legacy',
+            titulo: idea.titulo || 'Artículo',
+            // ✅ limpiar antes de generar preview
+            preview: cleanModelHtml(idea.articulo).replace(/<[^>]+>/g,' ').replace(/\s+/g,' ').trim().slice(0,140),
+            html: idea.articulo,
+            estado: 'borrador',
+            created_at: null
+          }] : [];
+
+          const lista = Array.isArray(idea.articulos) ? idea.articulos.map(a => ({
+            id: a.id,
+            titulo: idea.titulo || 'Artículo',
+            // ✅ limpiar antes de preview
+            preview: cleanModelHtml(a.html || '').replace(/<[^>]+>/g,' ').replace(/\s+/g,' ').trim().slice(0,140),
+            html: a.html,
+            estado: a.estado,
+            created_at: a.created_at
+          })) : [];
+
+          const all = [...lista, ...legacy];
+          if (!all.length) return;
+
+          const seen = new Set();
+          const unique = all.filter(a => {
+            // ✅ firmar con HTML limpio
+            const sig = cleanModelHtml(a.html || '').slice(0,120);
+            if (seen.has(sig)) return false;
+            seen.add(sig);
+            return true;
+          });
+
+          const exp = block.querySelector('.export-buttons-block');
+          exp && exp.classList.remove('hidden');
+
+          const btnG = block.querySelector('.btn-generar');
+          if (btnG) {
+            btnG.disabled = false;
+            btnG.title = 'Generar otro artículo para esta idea';
+            const tx = btnG.querySelector('.btn-text');
+            if (tx) tx.textContent = '✍️ Generar otro';
+          }
+
+          unique.forEach(a => appendArticleItem(block, a));
+        });
+      } catch (e) {
+        console.error('renderSavedArticles error:', e);
+      }
+    }
+
+    // === Al generar uno nuevo ===
+    function onArticleGenerated(block, kw, serverResp, { force = true } = {}) {
+      const cleaned = cleanModelHtml(serverResp.html || '');
+      const idea = (window.scidataIdeas || []).find(i => i && i.keyword === kw);
+      const titulo = idea?.titulo || 'Artículo';
+      const preview = cleaned.replace(/<[^>]+>/g,' ').replace(/\s+/g,' ').trim();
+
+      appendArticleItem(block, {
+        id: serverResp.id || String(Date.now()),
+        titulo,
+        preview: preview.slice(0,140) + (preview.length>140?'…':''),
+        html: cleaned,
+        estado: serverResp.estado || 'borrador',
+        created_at: serverResp.created_at || null
+      }, { force });
+
+      const exp = block.querySelector('.export-buttons-block');
+      exp && exp.classList.remove('hidden');
+
+      const btnG = block.querySelector('.btn-generar');
+      if (btnG) {
+        const tx = btnG.querySelector('.btn-text');
+        btnG.disabled = false;
+        btnG.title = 'Generar otro artículo';
+        if (tx) tx.textContent = '✍️ Generar otro';
+      }
+    }
+
+    // === Wiring de la página ===
+    document.addEventListener('DOMContentLoaded', () => {
+      const csvInput = document.getElementById('csv');
+      const csvText  = document.querySelector('.csv-text');
+      const btnCsv   = document.getElementById('btn-gen-csv');
+
+      if (csvInput) {
+        csvInput.addEventListener('change', () => {
+          const f = csvInput.files[0];
+          csvText.textContent = f ? f.name : 'Sin archivos seleccionados';
+          btnCsv.disabled = !f;
+        });
+      }
+
+      function bindSpinner(formId, btnId) {
+        const form = document.getElementById(formId);
+        const btn  = document.getElementById(btnId);
+        if (!form || !btn) return;
+        const sp = btn.querySelector('.spinner');
+        const tx = btn.querySelector('.btn-text');
+        form.addEventListener('submit', e => {
+          e.preventDefault();
+          sp.classList.remove('hidden');
+          tx.textContent = 'Generando…';
+          btn.disabled = true;
+          setTimeout(() => form.submit(), 100);
+        });
+      }
+      bindSpinner('keyword-form', 'btn-gen-keyword');
+      bindSpinner('csv-form', 'btn-gen-csv');
+
+      // Generar artículos
+      document.querySelectorAll('.btn-generar').forEach(btn => {
+        if (btn.dataset.bound === '1') return;
+        btn.dataset.bound = '1';
+
+        btn.addEventListener('click', () => {
+          const sp = btn.querySelector('.spinner');
+          const tx = btn.querySelector('.btn-text');
+          const block = btn.closest('.idea-block');
+          const exp = block.querySelector('.export-buttons-block');
+          const kw = btn.dataset.keyword;
+
+          if (block.dataset.generating === '1') return;
+          block.dataset.generating = '1';
+
+          sp.classList.remove('hidden');
+          tx.textContent = 'Generando…';
+          btn.disabled = true;
+
+          const skel = addGeneratingSkeleton(block);
+
+          setTimeout(async () => {
+            try {
+              const res = await fetch('{{ url_for("generar_articulo") }}', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ keyword: kw })
+              });
+              if (!res.ok) throw new Error('Error ' + res.status);
+
+              const data = await res.json();
+              onArticleGenerated(block, kw, data, { force: true });
+
+              exp && exp.classList.remove('hidden');
+              await refreshCounters();
+
+              btn.disabled = false;
+              btn.title = 'Generar otro artículo';
+              tx.textContent = '✍️ Generar otro';
+            } catch (e) {
+              console.error(e);
+              window.showToast && showToast('Error al generar el artículo');
+              btn.disabled = false;
+              tx.textContent = '✍️ Escribir artículo';
+            } finally {
+              removeGeneratingSkeleton(skel);
+              sp.classList.add('hidden');
+              block.dataset.generating = '0';
+            }
+          }, 200);
+        });
+      });
+
+      // Borrar ideas (completas)
+      document.querySelectorAll('.btn-delete-idea').forEach(btn => {
+        btn.addEventListener('click', async () => {
+          const kw = btn.dataset.keyword;
+          const block = btn.closest('.idea-block');
+          if (!confirm(`¿Eliminar la idea para "${kw}"?`)) return;
+          try {
+            const r = await fetch('{{ url_for("eliminar_idea") }}', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ keyword: kw })
+            });
+            if (!r.ok) throw new Error('Error en la solicitud');
+            block.remove();
+            window.showToast && showToast(`Idea eliminada: ${kw}`);
+          } catch (err) {
+            console.error(err);
+            window.showToast && showToast('Error al eliminar idea');
+          }
+        });
+      });
+
+      // Exportación CSV/MD (legacy)
+      document.querySelectorAll('.idea-block').forEach(block => {
+        const exportCSV = block.querySelector('.btn-export-csv');
+        const exportMD = block.querySelector('.btn-export-md');
+        const container = block.querySelector('.article-container');
+        const keyword = block.dataset.keyword;
+        const idea = (window.scidataIdeas || []).find(i => i.keyword === keyword);
+
+        if (exportCSV) {
+          exportCSV.addEventListener('click', () => {
+            const blob = new Blob([`keyword,titulo,articulo,tips_seo\n"${keyword}","${idea.titulo}","${(container.innerText||'').replace(/\n/g, ' ')}","${idea.tips_seo.join('; ')}"`], { type: 'text/csv;charset=utf-8;' });
+            const a = document.createElement('a');
+            a.href = URL.createObjectURL(blob);
+            a.download = `${keyword}.csv`;
+            a.click();
+          });
+        }
+
+        if (exportMD) {
+          exportMD.addEventListener('click', () => {
+            const md = `# ${idea.titulo}\n\n${container.innerText || ''}\n\n## Tips SEO\n${idea.tips_seo.map(t => `- ${t}`).join('\n')}`;
+            const blob = new Blob([md], { type: 'text/markdown;charset=utf-8;' });
+            const a = document.createElement('a');
+            a.href = URL.createObjectURL(blob);
+            a.download = `${keyword}.md`;
+            a.click();
+          });
+        }
+      });
+
+      // Render inicial
+      renderSavedArticles();
+    });
+
+    // Contadores
+    async function refreshCounters() {
+      try {
+        const r = await fetch('{{ url_for("api_counters") }}', { method: 'GET' });
+        if (!r.ok) return;
+        const data = await r.json();
+        const summary = document.querySelector('.dashboard-summary p:nth-child(2)');
+        if (summary) {
+          summary.innerHTML = `Generaste <strong>${data.total_ideas}</strong> ideas y escribiste <strong>${data.total_articulos}</strong> artículos. ¿Listo para seguir creando contenido?`;
+        }
+      } catch (e) {
+        console.error('No se pudieron refrescar los contadores', e);
+      }
+    }
+
+    console.log('con_articulo:', (window.scidataIdeas || []).filter(i => i && i.articulo).length);
+  </script>
+</body>
+</html>
