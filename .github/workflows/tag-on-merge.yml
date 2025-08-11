@@ -1,0 +1,57 @@
+name: Tag stable releases
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+    inputs:
+      force_tag:
+        description: 'Forzar tag aunque no haya [stable] en el commit'
+        required: false
+        default: 'false'
+
+permissions:
+  contents: write
+
+jobs:
+  tag:
+    runs-on: ubuntu-latest
+    if: ${{ github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[stable]') }}
+    steps:
+      - name: Checkout repo (con tags)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Calcular próximo tag (semver)
+        id: calc
+        run: |
+          set -e
+          LAST_TAG=$(git tag --list 'v*' --sort=-v:refname | head -n 1)
+          if [ -z "$LAST_TAG" ]; then
+            LAST_TAG="v0.0.0"
+          fi
+          echo "Último tag: $LAST_TAG"
+
+          MAJOR=$(echo $LAST_TAG | cut -d. -f1 | tr -d v)
+          MINOR=$(echo $LAST_TAG | cut -d. -f2)
+          PATCH=$(echo $LAST_TAG | cut -d. -f3)
+
+          # Estrategia simple: bump PATCH
+          NEXT_TAG="v${MAJOR}.${MINOR}.$((PATCH+1))"
+
+          echo "next_tag=$NEXT_TAG" >> $GITHUB_OUTPUT
+
+      - name: Crear tag anotado
+        run: |
+          git config user.name  "${{ github.actor }}"
+          git config user.email "${{ github.actor }}@users.noreply.github.com"
+          git tag -a "${{ steps.calc.outputs.next_tag }}" -m "Stable release: ${{ steps.calc.outputs.next_tag }}"
+          git push origin "${{ steps.calc.outputs.next_tag }}"
+
+      - name: Crear Release en GitHub
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.calc.outputs.next_tag }}
+          name: ${{ steps.calc.outputs.next_tag }}
+          generate_release_notes: true

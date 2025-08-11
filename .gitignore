@@ -1,17 +1,19 @@
-# Entorno virtual
+# Entorno / secretos
 venv/
 .env
-
-# Archivos de Python cache
 __pycache__/
 *.pyc
+*.log
 
-# Archivos de base de datos locales
+# Bases locales (por defecto ignoradas)
 *.db
 *.sqlite
 
-# Archivos de usuario
+# JSONs ignorados por defecto...
 *.json
+# ...pero versionamos los que nos interesan
+!data/ideas/*.json
+!data/counters.json
 
-# Logs
-*.log
+# Estáticos y templates SIEMPRE versionados
+# (no los ignores)
