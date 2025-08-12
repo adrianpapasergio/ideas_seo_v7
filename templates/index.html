@@ -574,35 +574,81 @@
         });
       });
 
-      // Exportación CSV/MD (legacy)
-      document.querySelectorAll('.idea-block').forEach(block => {
-        const exportCSV = block.querySelector('.btn-export-csv');
-        const exportMD = block.querySelector('.btn-export-md');
-        const container = block.querySelector('.article-container');
-        const keyword = block.dataset.keyword;
-        const idea = (window.scidataIdeas || []).find(i => i.keyword === keyword);
 
-        if (exportCSV) {
-          exportCSV.addEventListener('click', () => {
-            const blob = new Blob([`keyword,titulo,articulo,tips_seo\n"${keyword}","${idea.titulo}","${(container.innerText||'').replace(/\n/g, ' ')}","${idea.tips_seo.join('; ')}"`], { type: 'text/csv;charset=utf-8;' });
-            const a = document.createElement('a');
-            a.href = URL.createObjectURL(blob);
-            a.download = `${keyword}.csv`;
-            a.click();
-          });
-        }
+    // Exportación CSV y MD (lee de .articles-list y cae a legacy si hace falta)
+    document.querySelectorAll('.idea-block').forEach(block => {
+      const exportCSV = block.querySelector('.btn-export-csv');
+      const exportMD  = block.querySelector('.btn-export-md');
+      const keyword   = block.dataset.keyword;
+      const idea      = (window.scidataIdeas || []).find(i => i.keyword === keyword) || {};
 
-        if (exportMD) {
-          exportMD.addEventListener('click', () => {
-            const md = `# ${idea.titulo}\n\n${container.innerText || ''}\n\n## Tips SEO\n${idea.tips_seo.map(t => `- ${t}`).join('\n')}`;
-            const blob = new Blob([md], { type: 'text/markdown;charset=utf-8;' });
-            const a = document.createElement('a');
-            a.href = URL.createObjectURL(blob);
-            a.download = `${keyword}.md`;
-            a.click();
-          });
-        }
-      });
+      // Toma el texto de todos los artículos renderizados en la UI
+      function getPlainTextFromUI() {
+        const list = block.querySelectorAll('.articles-list > li > div:last-child'); // el "body" que tiene el HTML del artículo
+        let parts = [];
+        list.forEach(div => {
+          const t = (div.innerText || '').trim();
+          if (t) parts.push(t);
+        });
+        return parts.join('\n\n').trim();
+      }
+
+      // Fallback: si aún no se renderizó nada en la UI, usa lo persistido
+      function getPlainTextFromPersisted() {
+        try {
+          // Prioridad a la lista "articulos"; si no, usa "articulo" (legacy)
+          if (Array.isArray(idea.articulos) && idea.articulos.length) {
+            return idea.articulos
+              .map(a => (a && a.html ? a.html : ''))
+              .filter(Boolean)
+              .map(h => h.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim())
+              .join('\n\n')
+              .trim();
+          }
+          if (idea.articulo) {
+            return String(idea.articulo)
+              .replace(/<[^>]+>/g, ' ')
+              .replace(/\s+/g, ' ')
+              .trim();
+          }
+        } catch {}
+        return '';
+      }
+
+      function getExportText() {
+        const ui = getPlainTextFromUI();
+        if (ui) return ui;
+        return getPlainTextFromPersisted();
+      }
+
+      if (exportCSV) {
+        exportCSV.addEventListener('click', () => {
+          const plain = getExportText();
+          const titulo = (idea.titulo || 'Artículo').replace(/"/g, '""');
+          const tips   = Array.isArray(idea.tips_seo) ? idea.tips_seo.join('; ') : '';
+          const fila   = `keyword,titulo,articulo,tips_seo\n"${keyword}","${titulo}","${plain.replace(/"/g,'""')}","${tips.replace(/"/g,'""')}"`;
+          const blob   = new Blob([fila], { type: 'text/csv;charset=utf-8;' });
+          const a      = document.createElement('a');
+          a.href       = URL.createObjectURL(blob);
+          a.download   = `${keyword}.csv`;
+          a.click();
+        });
+      }
+
+      if (exportMD) {
+        exportMD.addEventListener('click', () => {
+          const plain  = getExportText();
+          const titulo = idea.titulo || 'Artículo';
+          const tips   = Array.isArray(idea.tips_seo) ? idea.tips_seo.map(t => `- ${t}`).join('\n') : '';
+          const md     = `# ${titulo}\n\n${plain}\n\n## Tips SEO\n${tips}\n`;
+          const blob   = new Blob([md], { type: 'text/markdown;charset=utf-8;' });
+          const a      = document.createElement('a');
+          a.href       = URL.createObjectURL(blob);
+          a.download   = `${keyword}.md`;
+          a.click();
+        });
+      }
+    });
 
       // Render inicial
       renderSavedArticles();

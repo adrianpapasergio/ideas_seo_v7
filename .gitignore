@@ -12,8 +12,10 @@ __pycache__/
 # Ignorar archivos de configuración de macOS
 .DS_Store
 
-# Ignorar freeze release
-.freeze_release.sh
+# Ignorar freeze release y otros scripts de inicio
+freeze_release.sh
+project_start.sh
+project_start.ps1
 
 
 # JSONs ignorados por defecto...
