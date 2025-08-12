@@ -31,3 +31,5 @@ git push origin main
 # (no los ignores)
 # No versionar JSON de usuarios
 data/ideas/*.json
+.DS_Store
+**/.DS_Store
