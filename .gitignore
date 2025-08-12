@@ -12,8 +12,13 @@ __pycache__/
 # Ignorar archivos de configuración de macOS
 .DS_Store
 
+# Ignorar freeze release
+.freeze_release.sh
+
+
 # JSONs ignorados por defecto...
 *.json
+
 # ...pero versionamos los que nos interesan
 !data/ideas/*.json
 !data/counters.json

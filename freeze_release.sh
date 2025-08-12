@@ -1,107 +1,128 @@
-#!/bin/bash
-# Congela una versión estable: valida estado, hace pull --rebase y crea un tag anotado.
-# Uso:
-#   ./freeze_release.sh                # genera versión auto: vYYYY.MM.DD ó vYYYY.MM.DD-2
-#   ./freeze_release.sh v2025.08.11    # usa la versión indicada
-#   ./freeze_release.sh v2025.08.11 "Mensaje del release"
-
+#!/usr/bin/env bash
 set -euo pipefail
 
-# --- helpers ---
+# ------------------------------
+# Helpers
+# ------------------------------
 die() { echo "❌ $*" >&2; exit 1; }
+info(){ echo "➜ $*"; }
 
-need_cmd() {
-  command -v "$1" >/dev/null 2>&1 || die "No encuentro '$1'. Instálalo y reintentá."
+require_cmd() {
+  command -v "$1" >/dev/null 2>&1 || die "Comando requerido no encontrado: $1"
 }
 
 in_git_repo() {
   git rev-parse --is-inside-work-tree >/dev/null 2>&1
 }
 
-ensure_clean_worktree() {
-  # No cambios sin commitear ni index pendiente
-  if ! git diff --quiet || ! git diff --cached --quiet; then
-    die "Tu árbol de trabajo tiene cambios sin commitear. Hacé commit/stash y reintentá."
-  fi
-  # No rebase/merge en progreso
-  if [ -d .git/rebase-merge ] || [ -d .git/rebase-apply ] || [ -f .git/MERGE_HEAD ]; then
-    die "Parece haber un rebase/merge en progreso. Terminá/abortá eso y reintentá."
-  fi
+is_clean_tree() {
+  # árbol limpio == salida vacía
+  [[ -z "$(git status --porcelain)" ]]
 }
 
-next_auto_version() {
-  local base="v$(date +%Y.%m.%d)"
-  if ! git rev-parse -q --verify "refs/tags/$base" >/dev/null; then
-    echo "$base"
-    return 0
-  fi
-  local n=2
-  while git rev-parse -q --verify "refs/tags/${base}-${n}" >/dev/null; do
-    n=$((n+1))
-  done
-  echo "${base}-${n}"
+current_branch() {
+  git rev-parse --abbrev-ref HEAD
 }
 
-# --- prereqs ---
-need_cmd git
-in_git_repo || die "Ejecutá este script dentro del repo git."
-git rev-parse --abbrev-ref HEAD >/dev/null || die "No pude determinar la rama actual."
-
-# --- remoto y rama ---
-REMOTE="${REMOTE:-origin}"
-BRANCH="${BRANCH:-main}"
-
-git remote get-url "$REMOTE" >/dev/null 2>&1 || die "El remoto '$REMOTE' no existe. Configuralo primero (p.ej. origin)."
-
-# --- validaciones de estado ---
-ensure_clean_worktree
-
-# --- sync con remoto ---
-echo "⬇️  Fetch desde $REMOTE..."
-git fetch "$REMOTE" --tags
-
-# Asegurarnos de estar en main (o la rama configurada)
-current_branch="$(git rev-parse --abbrev-ref HEAD)"
-if [ "$current_branch" != "$BRANCH" ]; then
-  echo "🔀 Cambiando a rama '$BRANCH'..."
-  git checkout "$BRANCH"
-fi
-
-echo "🔄 Rebase con $REMOTE/$BRANCH..."
-git pull --rebase "$REMOTE" "$BRANCH"
-
-# --- determinar versión ---
-VERSION="${1:-}"
-if [ -z "$VERSION" ]; then
-  VERSION="$(next_auto_version)"
-fi
-
-# Sanitizar: debe empezar por v y no contener espacios
-[[ "$VERSION" =~ ^v[0-9]{4}\.[0-9]{2}\.[0-9]{2}(-[0-9]+)?$ ]] || {
-  echo "⚠️  Versión '$VERSION' con formato inesperado."
-  echo "    Sugerido: vYYYY.MM.DD o vYYYY.MM.DD-N (ej. v2025.08.11 o v2025.08.11-2)"
+remote_url() {
+  git remote get-url origin 2>/dev/null || true
 }
 
-# Chequear que no exista
-if git rev-parse -q --verify "refs/tags/$VERSION" >/dev/null; then
-  die "El tag '$VERSION' ya existe. Probá otro (o dejá que el script genere uno automáticamente)."
+tag_exists() {
+  local tag="$1"
+  git rev-parse -q --verify "refs/tags/$tag" >/dev/null 2>&1 && return 0
+  git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null 2>&1 && return 0
+  return 1
+}
+
+validate_tag() {
+  local tag="$1"
+  # Formato estricto: vYYYY.MM.DD o vYYYY.MM.DD-N
+  [[ "$tag" =~ ^v[0-9]{4}\.[0-9]{2}\.[0-9]{2}(-[0-9]+)?$ ]]
+}
+
+sanitize_tag() {
+  # Reemplaza espacios por guiones y filtra caracteres no válidos
+  echo "$1" | tr ' ' '-' | tr -cd '[:alnum:]._-' 
+}
+
+# ------------------------------
+# Pre-chequeos
+# ------------------------------
+require_cmd git
+
+in_git_repo || die "No estás dentro de un repositorio Git."
+[[ "$(current_branch)" == "main" ]] || die "Parate en 'main' antes de congelar (estás en '$(current_branch)')"
+
+# Rebase pendiente?
+if [[ -d .git/rebase-merge || -d .git/rebase-apply ]]; then
+  die "Tenés un rebase pendiente. Ejecutá 'git rebase --continue' o '--abort' y reintentá."
 fi
 
-# --- mensaje del tag ---
-TAG_MSG="${2:-}"
-if [ -z "$TAG_MSG" ]; then
-  read -r -p "📝 Mensaje del release (enter para 'Stable release'): " TAG_MSG || true
-  TAG_MSG="${TAG_MSG:-Stable release}"
+# Árbol limpio
+if ! is_clean_tree; then
+  echo "❌ Tu árbol de trabajo tiene cambios sin commitear."
+  echo "   Sugerencias:"
+  echo "   - git add -A && git commit -m \"chore: trabajo en curso\""
+  echo "   - o bien: git stash push -u -m \"wip\""
+  exit 1
 fi
 
-# --- crear tag y pushear ---
-echo "🏷️  Creando tag anotado '$VERSION'..."
-git tag -a "$VERSION" -m "$TAG_MSG"
+# Remoto
+REMOTE_URL="$(remote_url)"
+[[ -n "$REMOTE_URL" ]] || die "No existe remoto 'origin'. Configuralo con: git remote add origin <url>"
 
-echo "🚀 Pusheando tag a $REMOTE..."
-git push "$REMOTE" "$VERSION"
+# ------------------------------
+# Sync con remoto
+# ------------------------------
+info "Fetch desde origin…"
+git fetch origin
 
-echo "✅ Release congelado:"
-echo "   - Rama: $BRANCH"
-echo "   - Tag : $VERSION"
-echo "   - Msg : $TAG_MSG"
+info "Rebase con origin/main…"
+git rebase origin/main
+
+# ------------------------------
+# Tag + mensaje
+# ------------------------------
+TAG_INPUT="${1:-}"
+MSG_INPUT="${2:-}"
+
+if [[ -z "$TAG_INPUT" ]]; then
+  read -r -p "📌 Ingresá versión (formato vYYYY.MM.DD o vYYYY.MM.DD-N): " TAG_INPUT
+fi
+
+TAG_INPUT="$(sanitize_tag "$TAG_INPUT")"
+validate_tag "$TAG_INPUT" || die "Tag inválido: '$TAG_INPUT'. Usá, por ejemplo: v2025.08.12 o v2025.08.12-1"
+
+tag_exists "$TAG_INPUT" && die "El tag '$TAG_INPUT' ya existe (local o remoto). Elegí otro."
+
+if [[ -z "$MSG_INPUT" ]]; then
+  read -r -p "📝 Mensaje del release (ej. 'Versión estable post-fix CSV y contadores'): " MSG_INPUT
+  [[ -n "$MSG_INPUT" ]] || MSG_INPUT="Stable release"
+fi
+
+# ------------------------------
+# RELEASES.md
+# ------------------------------
+DATE_ISO="$(date -u +"%Y-%m-%d %H:%M:%SZ")"
+{
+  echo ""
+  echo "## $TAG_INPUT — $DATE_ISO"
+  echo ""
+  echo "- $MSG_INPUT"
+} >> RELEASES.md
+
+git add RELEASES.md
+git commit -m "chore(release): $TAG_INPUT – $MSG_INPUT" >/dev/null || true
+
+# ------------------------------
+# Crear tag y pushear
+# ------------------------------
+info "Creando tag '$TAG_INPUT'…"
+git tag -a "$TAG_INPUT" -m "$MSG_INPUT"
+
+info "Pusheando main + tags a origin…"
+git push origin main
+git push origin "$TAG_INPUT"
+
+echo "✅ Release congelado como tag: $TAG_INPUT"
