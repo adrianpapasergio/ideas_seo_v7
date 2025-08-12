@@ -15,5 +15,16 @@ __pycache__/
 !data/ideas/*.json
 !data/counters.json
 
+# Dejar de trackear TODOS los JSON bajo data/ideas (pero conservarlos en tu disco)
+git rm --cached -r data/ideas/*.json
+
+# Commit de esta limpieza
+git commit -m "chore: stop tracking per-user idea JSONs (local data)"
+
+# Subir
+git push origin main
+
 # Estáticos y templates SIEMPRE versionados
 # (no los ignores)
+# No versionar JSON de usuarios
+data/ideas/*.json
