@@ -9,6 +9,9 @@ __pycache__/
 *.db
 *.sqlite
 
+# Ignorar archivos de configuración de macOS
+.DS_Store
+
 # JSONs ignorados por defecto...
 *.json
 # ...pero versionamos los que nos interesan
