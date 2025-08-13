@@ -6,7 +6,7 @@ from flask import Flask, render_template, request, redirect, url_for, session, j
 
 # --- módulos propios ---
 import storage
-import ideas  # generar_ideas_para_keyword, generar_articulo_para_keyword
+import ideas  # generar_ideas_para_keyword, generar_articulo_para_keyword, optimizar_contenido_html
 from models import crear_usuario, buscar_usuario_por_email
 from utils import hashear_password, verificar_password
 
@@ -26,8 +26,10 @@ ESTADOS_VALIDOS = {"borrador", "revisado", "publicado", "archivado"}
 # HELPERS CONTADORES (persistentes con fallback)
 # ------------------------------------------------------
 def _total_ideas_persistente(email: str, ideas_list: list) -> int:
-    """Usa contador persistente si existe; si no, cae a len(ideas_list).
-       Si ambos existen, toma el mayor (para no 'bajar' al borrar)."""
+    """
+    Usa contador persistente si existe; si no, cae a len(ideas_list).
+    Si ambos existen, toma el mayor (para no 'bajar' al borrar).
+    """
     total_json = len(ideas_list or [])
     try:
         persist = storage.obtener_ideas_generadas(email)  # puede no existir
@@ -39,7 +41,10 @@ def _total_ideas_persistente(email: str, ideas_list: list) -> int:
 
 
 def _total_articulos_persistente(email: str, ideas_list: list) -> int:
-    """Cuenta persistente de artículos con fallback a conteo por JSON."""
+    """
+    Persistente de artículos con fallback a conteo por JSON (sumando
+    'articulos' o el campo legacy 'articulo').
+    """
     fallback = 0
     try:
         fallback = storage.contar_articulos_usuario(email)
@@ -56,7 +61,7 @@ def _total_articulos_persistente(email: str, ideas_list: list) -> int:
 
 
 def _merge_ideas(existing: list, nuevas: list) -> list:
-    """Fusiona por keyword (case-insensitive) sin duplicar."""
+    """Fusiona por keyword (case-insensitive) sin duplicar (helper por si se necesitara localmente)."""
     if not isinstance(existing, list):
         existing = []
     if not isinstance(nuevas, list):
@@ -149,93 +154,56 @@ def dashboard():
     email = session["email"]
     nombre = session.get("usuario") or "Usuario"
 
-    # --- Manejo de POST del formulario/CSV ---
+    # --- POST: generar desde formulario o CSV ---
     if request.method == "POST":
         pais = (request.form.get("pais") or "").strip()
         keyword = (request.form.get("keyword") or "").strip()
 
-        # CSV?
+        # Si viene CSV
         if "csv" in request.files and request.files["csv"].filename:
-            file = request.files["csv"]
-            file.stream.seek(0)
-            raw = file.read()
             try:
-                text = raw.decode("utf-8")
-            except UnicodeDecodeError:
-                text = raw.decode("latin-1", errors="ignore")
-            wrapper = io.StringIO(text)
-            reader = csv.DictReader(wrapper)
-            nuevas_ideas = []
-
-            for row in reader:
-                kw = (row.get("tendencia") or "").strip()
-                pa = (row.get("pais") or pais or "").strip()
-                if not kw:
-                    continue
+                file = request.files["csv"]
+                # leer contenido completo seguro (sin TextIOWrapper)
+                file.stream.seek(0)
+                raw = file.read()
                 try:
-                    nuevas_ideas.extend(
-                        ideas.generar_ideas_para_keyword(kw, pa or "Argentina")
-                    )
-                except Exception as e:
-                    print("[WARN] generar_ideas_para_keyword CSV:", e)
-
-            # merge + persistencia + contador (solo ideas NUEVAS)
-            try:
-                # ✅ merge + persistencia + contador acumulativo
-                actuales = storage.cargar_ideas_usuario(email) or []
-                fusionadas = _merge_ideas(actuales, nuevas_ideas)
-                storage.guardar_ideas_usuario(email, fusionadas)
-
-                # actualizar contador persistente con SOLO las nuevas
-                try:
-                    nuevas_unicas = len(fusionadas) - len(actuales)
-                    if nuevas_unicas > 0:
-                        storage.incrementar_ideas_generadas(email, inc=nuevas_unicas)
-                except Exception as e:
-                    print("[WARN contador ideas CSV]", e)
-            except AttributeError:
-                # compat si no existiera la función: merge manual y guardar
-                current = storage.cargar_ideas_usuario(email)
-                merged = _merge_ideas(current, nuevas_ideas)
-                storage.guardar_ideas_usuario(email, merged)
-                try:
-                    storage.incrementar_ideas_generadas(email, inc=len(nuevas_ideas))
+                    text = raw.decode("utf-8", errors="ignore")
                 except Exception:
-                    pass
+                    text = raw.decode("latin-1", errors="ignore")
+                reader = csv.DictReader(io.StringIO(text))
+
+                nuevas_ideas = []
+                for row in reader:
+                    kw = (row.get("tendencia") or "").strip()
+                    pa = (row.get("pais") or pais or "").strip()
+                    if not kw:
+                        continue
+                    try:
+                        nuevas_ideas.extend(
+                            ideas.generar_ideas_para_keyword(kw, pa or "Argentina")
+                        )
+                    except Exception as e:
+                        print("[WARN] generar_ideas_para_keyword CSV:", e)
+
+                # persistencia + contador (sólo suma las nuevas)
+                storage.agregar_ideas_usuario(email, nuevas_ideas)
+            except Exception as e:
+                print("[ERROR] carga CSV:", e)
 
             return redirect(url_for("dashboard"))
 
-        # Keyword simple
+        # Si vino keyword simple
         if keyword:
             try:
-                nuevas_ideas = ideas.generar_ideas_para_keyword(keyword, pais or "Argentina")
+                nuevas = ideas.generar_ideas_para_keyword(keyword, pais or "Argentina")
             except Exception as e:
                 print("[WARN] generar_ideas_para_keyword form:", e)
-                nuevas_ideas = []
+                nuevas = []
 
-            try:
-                actuales = storage.cargar_ideas_usuario(email) or []
-                fusionadas = _merge_ideas(actuales, nuevas_ideas)
-                storage.guardar_ideas_usuario(email, fusionadas)
-
-                try:
-                    nuevas_unicas = len(fusionadas) - len(actuales)
-                    if nuevas_unicas > 0:
-                        storage.incrementar_ideas_generadas(email, inc=nuevas_unicas)
-                except Exception as e:
-                    print("[WARN contador ideas keyword]", e)
-            except AttributeError:
-                current = storage.cargar_ideas_usuario(email)
-                merged = _merge_ideas(current, nuevas_ideas)
-                storage.guardar_ideas_usuario(email, merged)
-                try:
-                    storage.incrementar_ideas_generadas(email, inc=len(nuevas_ideas))
-                except Exception:
-                    pass
-
+            storage.agregar_ideas_usuario(email, nuevas)
             return redirect(url_for("dashboard"))
 
-        # Sin keyword ni csv -> recargar
+        # Si no vino nada, simplemente recargamos
         return redirect(url_for("dashboard"))
 
     # --- GET: render ---
@@ -281,8 +249,6 @@ def generar_articulo():
 
     data = request.get_json(silent=True) or {}
     keyword = (data.get("keyword") or "").strip()
-    # pais opcional; si querés pasarlo desde el front, ya queda listo
-    _pais = (data.get("pais") or "").strip()
 
     if not keyword:
         return jsonify(error="bad_request"), 400
@@ -296,6 +262,7 @@ def generar_articulo():
 
     email = session["email"]
     articulo = storage.append_articulo_usuario(email, keyword, html, estado="borrador")
+
     # contador persistente de artículos +1 (no decrece)
     try:
         storage.incrementar_articulos_generados(email)
@@ -311,6 +278,46 @@ def generar_articulo():
         "estado": articulo.get("estado", "borrador"),
         "created_at": articulo.get("created_at")
     })
+
+
+# ------------------------------------------------------
+# API: optimizar artículo (AJAX)
+#   request: { html, keyword?, target_url? }
+#   response: { ok, html, files }
+# ------------------------------------------------------
+@app.post("/api/optimizar-articulo")
+def optimizar_articulo_api():
+    if "email" not in session:
+        return jsonify(ok=False, error="not_authenticated"), 401
+
+    data = request.get_json(silent=True) or {}
+    html_in = (data.get("html") or "").strip()
+    keyword = (data.get("keyword") or "").strip()
+    target_url = (data.get("target_url") or "").strip()
+
+    if not html_in:
+        return jsonify(ok=False, error="bad_request", detail="html vacío"), 400
+
+    try:
+        # Optimización (usa OpenAI si hay API key; si no, fallback interno en ideas.py)
+        result = ideas.optimizar_contenido_html(
+            html_in,
+            keyword=keyword,
+            target_url=target_url
+        )
+        html_out = (result or {}).get("html") or html_in
+        files = (result or {}).get("files", {})
+
+        # Guardar versión "revisado" (no pisamos la anterior)
+        try:
+            storage.append_articulo_usuario(session["email"], keyword or "sin_keyword", html_out, estado="revisado")
+        except Exception as e:
+            print("[WARN] persistir optimizado:", e)
+
+        return jsonify(ok=True, html=html_out, files=files)
+    except Exception as e:
+        print("[ERROR] optimizar_articulo_api:", e)
+        return jsonify(ok=False, error="server_error"), 500
 
 
 # ------------------------------------------------------
@@ -370,9 +377,8 @@ def api_eliminar_articulo():
 
 
 # ------------------------------------------------------
-# RUN
+# RUN (dev)
 # ------------------------------------------------------
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
-    # host 127.0.0.1 para no chocar con AirPlay y evitar rebind en :5000 externo
     app.run(host="127.0.0.1", port=port, debug=True)

@@ -76,14 +76,18 @@
           <span class="spinner hidden"></span>
           <span class="btn-text">✍️ Escribir artículo</span>
         </button>
+        <button class="btn-write btn-optimizar" data-keyword="{{ idea.keyword }}">
+          <span class="btn-text">✨ Optimizar y Exportar</span>
+        </button>
         <button class="btn-delete-idea" data-keyword="{{ idea.keyword }}">🗑️ Eliminar</button>
 
-        <!-- Contenedor legacy (no se usa para mostrar, lo dejamos vacío) -->
+        <!-- Contenedor de artículos renderizados -->
         <div class="article-container"></div>
 
         <div class="export-buttons-block hidden">
           <button class="btn-write export-btn btn-export-csv">📥 CSV</button>
           <button class="btn-write export-btn btn-export-md">📝 MD</button>
+          <button class="btn-write export-btn btn-export-html">📄 HTML</button>
         </div>
       </div>
       {% endfor %}
@@ -110,17 +114,20 @@
     }
     window.showToast = showToast;
 
-    // ✅ Limpia respuestas que vienen envueltas en ```html ... ```
+    // --- Utilidades HTML/preview ---
     function cleanModelHtml(str) {
       if (!str) return '';
-      // Si viene un bloque fenced, extrae su interior
       const fenced = str.match(/```(?:html|HTML)?\s*([\s\S]*?)\s*```/);
       if (fenced) return fenced[1].trim();
-      // Si sólo trae el "```html" inicial o los backticks sueltos
-      return str
-        .replace(/^```(?:html|HTML)?\s*/,'')
-        .replace(/```$/,'')
-        .trim();
+      return str.replace(/^```(?:html|HTML)?\s*/,'').replace(/```$/,'').trim();
+    }
+
+    function getLatestArticleHTML(block) {
+      const li = block.querySelector('.articles-list li');
+      if (!li) return '';
+      const bodies = li.querySelectorAll('div');
+      const body = bodies[bodies.length - 1];
+      return body ? body.innerHTML : '';
     }
 
     // --- Badges ---
@@ -162,7 +169,7 @@
       return span;
     }
 
-    // === Item de artículo (título + preview + acordeón + estado + eliminar) ===
+    // === Item de artículo ===
     function appendArticleItem(block, artObj, { force = false } = {}) {
       const list = block.querySelector('.articles-list') || (() => {
         const ul = document.createElement('ul');
@@ -174,12 +181,9 @@
         return ul;
       })();
 
-      // dedupe salvo que sea "force"
       const cleanedHtml = cleanModelHtml(artObj.html || '');
       const sig = cleanedHtml.slice(0, 120);
-      if (!force && sig && list.querySelector(`li[data-sig="${CSS.escape(sig)}"]`)) {
-        return;
-      }
+      if (!force && sig && list.querySelector(`li[data-sig="${CSS.escape(sig)}"]`)) return;
 
       const li = document.createElement('li');
       li.style.margin = '6px 0 10px 0';
@@ -299,7 +303,7 @@
           const j = await r.json();
           if (j && j.ok) {
             li.remove();
-            await refreshCounters(); // no decrementa histórico, solo refresca
+            await refreshCounters();
             showToast('Artículo eliminado');
           } else {
             showToast('No se pudo eliminar el artículo');
@@ -393,7 +397,6 @@
           const legacy = idea.articulo ? [{
             id: 'legacy',
             titulo: idea.titulo || 'Artículo',
-            // ✅ limpiar antes de generar preview
             preview: cleanModelHtml(idea.articulo).replace(/<[^>]+>/g,' ').replace(/\s+/g,' ').trim().slice(0,140),
             html: idea.articulo,
             estado: 'borrador',
@@ -403,7 +406,6 @@
           const lista = Array.isArray(idea.articulos) ? idea.articulos.map(a => ({
             id: a.id,
             titulo: idea.titulo || 'Artículo',
-            // ✅ limpiar antes de preview
             preview: cleanModelHtml(a.html || '').replace(/<[^>]+>/g,' ').replace(/\s+/g,' ').trim().slice(0,140),
             html: a.html,
             estado: a.estado,
@@ -415,7 +417,6 @@
 
           const seen = new Set();
           const unique = all.filter(a => {
-            // ✅ firmar con HTML limpio
             const sig = cleanModelHtml(a.html || '').slice(0,120);
             if (seen.has(sig)) return false;
             seen.add(sig);
@@ -574,81 +575,215 @@
         });
       });
 
+      // Exportación CSV / MD / HTML
+      document.querySelectorAll('.idea-block').forEach(block => {
+        const exportCSV  = block.querySelector('.btn-export-csv');
+        const exportMD   = block.querySelector('.btn-export-md');
+        const exportHTML = block.querySelector('.btn-export-html');
+        const keyword    = block.dataset.keyword;
+        const idea       = (window.scidataIdeas || []).find(i => i.keyword === keyword) || {};
 
-    // Exportación CSV y MD (lee de .articles-list y cae a legacy si hace falta)
-    document.querySelectorAll('.idea-block').forEach(block => {
-      const exportCSV = block.querySelector('.btn-export-csv');
-      const exportMD  = block.querySelector('.btn-export-md');
-      const keyword   = block.dataset.keyword;
-      const idea      = (window.scidataIdeas || []).find(i => i.keyword === keyword) || {};
+        function getPlainTextFromUI() {
+          const list = block.querySelectorAll('.articles-list > li > div:last-child');
+          let parts = [];
+          list.forEach(div => {
+            const t = (div.innerText || '').trim();
+            if (t) parts.push(t);
+          });
+          return parts.join('\n\n').trim();
+        }
 
-      // Toma el texto de todos los artículos renderizados en la UI
-      function getPlainTextFromUI() {
-        const list = block.querySelectorAll('.articles-list > li > div:last-child'); // el "body" que tiene el HTML del artículo
-        let parts = [];
-        list.forEach(div => {
-          const t = (div.innerText || '').trim();
-          if (t) parts.push(t);
-        });
-        return parts.join('\n\n').trim();
-      }
+        function getHtmlFromUI() {
+          const li = block.querySelector('.articles-list li');
+          if (!li) return '';
+          const bodies = li.querySelectorAll('div');
+          const body = bodies[bodies.length - 1];
+          return body ? body.innerHTML : '';
+        }
 
-      // Fallback: si aún no se renderizó nada en la UI, usa lo persistido
-      function getPlainTextFromPersisted() {
-        try {
-          // Prioridad a la lista "articulos"; si no, usa "articulo" (legacy)
-          if (Array.isArray(idea.articulos) && idea.articulos.length) {
-            return idea.articulos
-              .map(a => (a && a.html ? a.html : ''))
-              .filter(Boolean)
-              .map(h => h.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim())
-              .join('\n\n')
-              .trim();
+        function getPlainTextFromPersisted() {
+          try {
+            if (Array.isArray(idea.articulos) && idea.articulos.length) {
+              return idea.articulos
+                .map(a => (a && a.html ? a.html : ''))
+                .filter(Boolean)
+                .map(h => h.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim())
+                .join('\n\n')
+                .trim();
+            }
+            if (idea.articulo) {
+              return String(idea.articulo)
+                .replace(/<[^>]+>/g, ' ')
+                .replace(/\s+/g, ' ')
+                .trim();
+            }
+          } catch {}
+          return '';
+        }
+
+        function getHtmlFromPersisted() {
+          try {
+            if (Array.isArray(idea.articulos) && idea.articulos.length) {
+              return idea.articulos[0]?.html || '';
+            }
+            if (idea.articulo) return idea.articulo;
+          } catch {}
+          return '';
+        }
+
+        function getExportText() {
+          const ui = getPlainTextFromUI();
+          if (ui) return ui;
+          return getPlainTextFromPersisted();
+        }
+
+        function getExportHtml() {
+          const ui = getHtmlFromUI();
+          if (ui) return ui;
+          return getHtmlFromPersisted();
+        }
+
+        if (exportCSV) {
+          exportCSV.addEventListener('click', () => {
+            const plain = getExportText();
+            const titulo = (idea.titulo || 'Artículo').replace(/"/g, '""');
+            const tips   = Array.isArray(idea.tips_seo) ? idea.tips_seo.join('; ') : '';
+            const fila   = `keyword,titulo,articulo,tips_seo\n"${keyword}","${titulo}","${plain.replace(/"/g,'""')}","${tips.replace(/"/g,'""')}"`;
+            const blob   = new Blob([fila], { type: 'text/csv;charset=utf-8;' });
+            const a      = document.createElement('a');
+            a.href       = URL.createObjectURL(blob);
+            a.download   = `${keyword}.csv`;
+            a.click();
+          });
+        }
+
+        if (exportMD) {
+          exportMD.addEventListener('click', () => {
+            const plain  = getExportText();
+            const titulo = idea.titulo || 'Artículo';
+            // quitamos bloque Tips SEO para evitar duplicados
+            const md     = `# ${titulo}\n\n${plain}\n`;
+            const blob   = new Blob([md], { type: 'text/markdown;charset=utf-8;' });
+            const a      = document.createElement('a');
+            a.href       = URL.createObjectURL(blob);
+            a.download   = `${keyword}.md`;
+            a.click();
+          });
+        }
+
+        if (exportHTML) {
+          exportHTML.addEventListener('click', () => {
+            const htmlBody = getExportHtml() || '<p>(sin contenido)</p>';
+            const titulo = (idea.titulo || 'Artículo').replace(/[<>]/g,'');
+            const full   =
+`<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<title>${titulo}</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+</head>
+<body>
+${htmlBody}
+</body>
+</html>`;
+            const blob = new Blob([full], { type: 'text/html;charset=utf-8;' });
+            const a    = document.createElement('a');
+            a.href     = URL.createObjectURL(blob);
+            a.download = `${keyword}.html`;
+            a.click();
+          });
+        }
+      });
+
+      // Optimizar artículo (envía HTML + keyword + id + target_url al backend)
+      document.querySelectorAll('.idea-block').forEach(block => {
+        const btnOpt = block.querySelector('.btn-optimizar');
+        if (!btnOpt) return;
+        if (btnOpt.dataset.bound === '1') return;
+        btnOpt.dataset.bound = '1';
+
+        btnOpt.addEventListener('click', async () => {
+          const kw = block.dataset.keyword || '';
+
+          // 1) HTML desde UI (más reciente)
+          let htmlRaw = getLatestArticleHTML(block);
+
+          // 2) o desde lo persistido
+          if (!htmlRaw) {
+            const idea = (window.scidataIdeas || []).find(i => i && i.keyword === kw) || {};
+            if (Array.isArray(idea.articulos) && idea.articulos.length) {
+              htmlRaw = idea.articulos[0]?.html || '';
+            } else if (idea.articulo) {
+              htmlRaw = idea.articulo;
+            }
           }
-          if (idea.articulo) {
-            return String(idea.articulo)
-              .replace(/<[^>]+>/g, ' ')
-              .replace(/\s+/g, ' ')
-              .trim();
+
+          const html = cleanModelHtml(htmlRaw);
+          if (!html) {
+            alert('No hay contenido para optimizar en esta idea.');
+            return;
           }
-        } catch {}
-        return '';
-      }
 
-      function getExportText() {
-        const ui = getPlainTextFromUI();
-        if (ui) return ui;
-        return getPlainTextFromPersisted();
-      }
+          const target = prompt('URL objetivo del sitio donde publicarás (ej: https://pipol.news):', 'https://');
+          if (target === null || !String(target).trim()) return;
 
-      if (exportCSV) {
-        exportCSV.addEventListener('click', () => {
-          const plain = getExportText();
-          const titulo = (idea.titulo || 'Artículo').replace(/"/g, '""');
-          const tips   = Array.isArray(idea.tips_seo) ? idea.tips_seo.join('; ') : '';
-          const fila   = `keyword,titulo,articulo,tips_seo\n"${keyword}","${titulo}","${plain.replace(/"/g,'""')}","${tips.replace(/"/g,'""')}"`;
-          const blob   = new Blob([fila], { type: 'text/csv;charset=utf-8;' });
-          const a      = document.createElement('a');
-          a.href       = URL.createObjectURL(blob);
-          a.download   = `${keyword}.csv`;
-          a.click();
+          // id del primer artículo visible, si existe
+          const li = block.querySelector('.articles-list li');
+          const articuloId = li ? (li.dataset.articleId || '') : '';
+
+          try {
+            const res = await fetch('{{ url_for("optimizar_articulo_api") }}', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                keyword: kw,
+                id: articuloId,
+                html: html,
+                target_url: String(target).trim()
+              })
+            });
+
+            let j = {};
+            try { j = await res.json(); } catch { j = {}; }
+
+            if (!res.ok || !j.ok) {
+              const detail = (j && (j.detail || j.error)) || `${res.status} ${res.statusText}` || '';
+              alert(`No se pudo optimizar.${detail ? ' (' + detail + ')' : ''}`);
+              return;
+            }
+
+            const optimizedHtml = j.html || html;
+
+            // Reemplazar en pantalla o insertar nuevo item
+            if (li) {
+              const bodies = li.querySelectorAll('div');
+              const body = bodies[bodies.length - 1];
+              if (body) body.innerHTML = optimizedHtml;
+            } else {
+              appendArticleItem(block, {
+                id: j.id || String(Date.now()),
+                titulo: (window.scidataIdeas || []).find(i => i && i.keyword === kw)?.titulo || 'Artículo',
+                preview: optimizedHtml.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 140),
+                html: optimizedHtml,
+                estado: 'revisado',
+                created_at: new Date().toISOString()
+              }, { force: true });
+            }
+
+            // Mostrar exportadores
+            const exp = block.querySelector('.export-buttons-block');
+            exp && exp.classList.remove('hidden');
+
+            alert('Optimización lista.');
+            await refreshCounters();
+            showToast('Artículo optimizado');
+          } catch (e) {
+            console.error(e);
+            alert('No se pudo optimizar (error de red).');
+          }
         });
-      }
-
-      if (exportMD) {
-        exportMD.addEventListener('click', () => {
-          const plain  = getExportText();
-          const titulo = idea.titulo || 'Artículo';
-          const tips   = Array.isArray(idea.tips_seo) ? idea.tips_seo.map(t => `- ${t}`).join('\n') : '';
-          const md     = `# ${titulo}\n\n${plain}\n\n## Tips SEO\n${tips}\n`;
-          const blob   = new Blob([md], { type: 'text/markdown;charset=utf-8;' });
-          const a      = document.createElement('a');
-          a.href       = URL.createObjectURL(blob);
-          a.download   = `${keyword}.md`;
-          a.click();
-        });
-      }
-    });
+      });
 
       // Render inicial
       renderSavedArticles();
