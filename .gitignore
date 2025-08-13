@@ -16,6 +16,7 @@ __pycache__/
 freeze_release.sh
 project_start.sh
 project_start.ps1
+qa_smoke.py
 
 
 # JSONs ignorados por defecto...

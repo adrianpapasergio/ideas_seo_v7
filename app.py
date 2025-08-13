@@ -1,8 +1,10 @@
 # -*- coding: utf-8 -*-
 import os
+import re
 import csv
 import io
-from flask import Flask, render_template, request, redirect, url_for, session, jsonify
+import time
+from flask import Flask, render_template, request, redirect, url_for, session, jsonify, send_from_directory, abort, make_response
 
 # --- módulos propios ---
 import storage
@@ -291,33 +293,33 @@ def optimizar_articulo_api():
         return jsonify(ok=False, error="not_authenticated"), 401
 
     data = request.get_json(silent=True) or {}
-    html_in = (data.get("html") or "").strip()
-    keyword = (data.get("keyword") or "").strip()
+    html_in    = (data.get("html") or "").strip()
+    keyword    = (data.get("keyword") or "").strip()
     target_url = (data.get("target_url") or "").strip()
 
     if not html_in:
         return jsonify(ok=False, error="bad_request", detail="html vacío"), 400
 
     try:
-        # Optimización (usa OpenAI si hay API key; si no, fallback interno en ideas.py)
-        result = ideas.optimizar_contenido_html(
-            html_in,
-            keyword=keyword,
-            target_url=target_url
-        )
-        html_out = (result or {}).get("html") or html_in
-        files = (result or {}).get("files", {})
-
-        # Guardar versión "revisado" (no pisamos la anterior)
-        try:
-            storage.append_articulo_usuario(session["email"], keyword or "sin_keyword", html_out, estado="revisado")
-        except Exception as e:
-            print("[WARN] persistir optimizado:", e)
-
-        return jsonify(ok=True, html=html_out, files=files)
+        # Usa la función de ideas.py (online u offline según .env)
+        from ideas import optimizar_articulo_html as _opt
+        res = _opt(html=html_in, keyword=keyword, target_url=target_url)
     except Exception as e:
-        print("[ERROR] optimizar_articulo_api:", e)
-        return jsonify(ok=False, error="server_error"), 500
+        print("[ERROR] optimizar_articulo_api import/exec:", e)
+        return jsonify(ok=False, error="ideas_module_error"), 500
+
+    html_out = (res or {}).get("html") or html_in
+    files    = (res or {}).get("files", {})
+
+    # Guardar como nueva versión (estado "revisado") para no perder la anterior
+    try:
+        storage.append_articulo_usuario(session["email"], keyword or "sin_keyword", html_out, estado="revisado")
+        # si querés contar optimizaciones como “artículos” históricos:
+        # storage.incrementar_articulos_generados(session["email"])
+    except Exception as e:
+        print("[WARN] persistir optimizado:", e)
+
+    return jsonify(ok=True, html=html_out, files=files)
 
 
 # ------------------------------------------------------
@@ -375,6 +377,56 @@ def api_eliminar_articulo():
     ok = storage.eliminar_articulo_usuario(session["email"], keyword, articulo_id)
     return jsonify(ok=bool(ok))  # no tocamos contadores persistentes
 
+# ------------------------------------------------------
+# API: diagnóstico (OpenAI, env, etc.)
+# ------------------------------------------------------
+@app.get("/api/diagnostico")
+def api_diagnostico():
+    try:
+        # ideas.py ya hace load_dotenv al importarse
+        from ideas import OPENAI_API_KEY, OPENAI_MODEL, client as openai_client
+    except Exception:
+        OPENAI_API_KEY, OPENAI_MODEL, openai_client = "", "", None
+
+    api_key_present = bool((OPENAI_API_KEY or "").strip())
+    openai_enabled = bool(openai_client)
+    mode = "online" if (api_key_present and openai_enabled) else "offline"
+
+    return jsonify(
+        ok=True,
+        openai_enabled=openai_enabled,   # True si el cliente quedó instanciado
+        api_key_present=api_key_present, # True si .env tiene KEY
+        model=(OPENAI_MODEL or None),    # p.ej. "gpt-4o-mini"
+        mode=mode                        # "online" | "offline"
+    )
+
+
+@app.get("/api/whoami-openai")
+def api_whoami_openai():
+    """
+    Verificación fuerte: hace una llamada mínima a OpenAI.
+    Si funciona, estás 100% online (credenciales + conectividad).
+    """
+    try:
+        from ideas import client as openai_client, OPENAI_MODEL
+    except Exception:
+        return jsonify(ok=False, error="ideas_import_failed"), 500
+
+    if not openai_client:
+        return jsonify(ok=False, error="client_none"), 400
+
+    model = (OPENAI_MODEL or "gpt-4o-mini")
+    try:
+        rsp = openai_client.chat.completions.create(
+            model=model,
+            messages=[{"role": "user", "content": "pong"}],
+            max_tokens=5,
+            temperature=0.0,
+        )
+        return jsonify(ok=True, test="pong", model=model)
+    except Exception as e:
+        return jsonify(ok=False, error=str(e)), 500
+
 
 # ------------------------------------------------------
 # RUN (dev)
@@ -382,3 +434,5 @@ def api_eliminar_articulo():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="127.0.0.1", port=port, debug=True)
+
+
