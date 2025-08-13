@@ -696,94 +696,85 @@ ${htmlBody}
         }
       });
 
-      // Optimizar artículo (envía HTML + keyword + id + target_url al backend)
-      document.querySelectorAll('.idea-block').forEach(block => {
-        const btnOpt = block.querySelector('.btn-optimizar');
-        if (!btnOpt) return;
-        if (btnOpt.dataset.bound === '1') return;
-        btnOpt.dataset.bound = '1';
+    // Optimizar artículo (envía HTML + keyword + id + target_url al backend)
+    document.querySelectorAll('.idea-block').forEach(block => {
+      const btnOpt = block.querySelector('.btn-optimizar');
+      if (!btnOpt) return;
+      if (btnOpt.dataset.bound === '1') return;
+      btnOpt.dataset.bound = '1';
 
-        btnOpt.addEventListener('click', async () => {
-          const kw = block.dataset.keyword || '';
+      // contenedor de enlaces de export (lo creamos si no existe)
+      let exportLinks = block.querySelector('.export-links');
+      if (!exportLinks) {
+        exportLinks = document.createElement('div');
+        exportLinks.className = 'export-links hidden';
+        exportLinks.style.marginTop = '8px';
+        exportLinks.style.fontSize = '.95rem';
+        block.appendChild(exportLinks);
+      }
 
-          // 1) HTML desde UI (más reciente)
-          let htmlRaw = getLatestArticleHTML(block);
+      btnOpt.addEventListener('click', async () => {
+        const kw = block.dataset.keyword || '';
+        const htmlRaw = getLatestArticleHTML(block);
+        const html = cleanModelHtml(htmlRaw);
+        if (!html) {
+          alert('No hay contenido para optimizar en esta idea.');
+          return;
+        }
+        const target = prompt('URL objetivo (ej: https://pipol.news):', 'https://');
+        if (target === null || !String(target).trim()) return;
 
-          // 2) o desde lo persistido
-          if (!htmlRaw) {
-            const idea = (window.scidataIdeas || []).find(i => i && i.keyword === kw) || {};
-            if (Array.isArray(idea.articulos) && idea.articulos.length) {
-              htmlRaw = idea.articulos[0]?.html || '';
-            } else if (idea.articulo) {
-              htmlRaw = idea.articulo;
-            }
-          }
+        // id del primer artículo renderizado (si existe)
+        const li = block.querySelector('.articles-list li');
+        const articuloId = li ? (li.dataset.articleId || '') : '';
 
-          const html = cleanModelHtml(htmlRaw);
-          if (!html) {
-            alert('No hay contenido para optimizar en esta idea.');
+        try {
+          const res = await fetch('{{ url_for("optimizar_articulo_api") }}', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              keyword: kw,
+              id: articuloId,
+              html: html,
+              target_url: String(target).trim()
+            })
+          });
+
+          let j = {};
+          try { j = await res.json(); } catch (_) { j = {}; }
+
+          if (!res.ok || !j.ok) {
+            const detail = (j && (j.detail || j.error)) || `${res.status} ${res.statusText}` || '';
+            alert(`No se pudo optimizar.${detail ? ' (' + detail + ')' : ''}`);
             return;
           }
 
-          const target = prompt('URL objetivo del sitio donde publicarás (ej: https://pipol.news):', 'https://');
-          if (target === null || !String(target).trim()) return;
-
-          // id del primer artículo visible, si existe
-          const li = block.querySelector('.articles-list li');
-          const articuloId = li ? (li.dataset.articleId || '') : '';
-
-          try {
-            const res = await fetch('{{ url_for("optimizar_articulo_api") }}', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                keyword: kw,
-                id: articuloId,
-                html: html,
-                target_url: String(target).trim()
-              })
-            });
-
-            let j = {};
-            try { j = await res.json(); } catch { j = {}; }
-
-            if (!res.ok || !j.ok) {
-              const detail = (j && (j.detail || j.error)) || `${res.status} ${res.statusText}` || '';
-              alert(`No se pudo optimizar.${detail ? ' (' + detail + ')' : ''}`);
-              return;
-            }
-
-            const optimizedHtml = j.html || html;
-
-            // Reemplazar en pantalla o insertar nuevo item
-            if (li) {
-              const bodies = li.querySelectorAll('div');
-              const body = bodies[bodies.length - 1];
-              if (body) body.innerHTML = optimizedHtml;
-            } else {
-              appendArticleItem(block, {
-                id: j.id || String(Date.now()),
-                titulo: (window.scidataIdeas || []).find(i => i && i.keyword === kw)?.titulo || 'Artículo',
-                preview: optimizedHtml.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 140),
-                html: optimizedHtml,
-                estado: 'revisado',
-                created_at: new Date().toISOString()
-              }, { force: true });
-            }
-
-            // Mostrar exportadores
-            const exp = block.querySelector('.export-buttons-block');
-            exp && exp.classList.remove('hidden');
-
-            alert('Optimización lista.');
-            await refreshCounters();
-            showToast('Artículo optimizado');
-          } catch (e) {
-            console.error(e);
-            alert('No se pudo optimizar (error de red).');
+          // Actualizar el body del primer artículo mostrado con el HTML optimizado
+          if (j.html && li) {
+            const bodies = li.querySelectorAll('div');
+            const body = bodies[bodies.length - 1];
+            if (body) body.innerHTML = j.html;
           }
-        });
+
+          // Mostrar enlaces de descarga si se generaron archivos
+          const files = j.files || {};
+          const parts = [];
+          if (files.md)   parts.push(`<a href="/download/${encodeURIComponent(files.md)}" target="_blank" rel="noopener">Descargar MD</a>`);
+          if (files.html) parts.push(`<a href="/download/${encodeURIComponent(files.html)}" target="_blank" rel="noopener">Descargar HTML</a>`);
+
+          if (parts.length) {
+            exportLinks.innerHTML = `📎 Exportaciones: ${parts.join(" · ")}`;
+            exportLinks.classList.remove('hidden');
+          }
+
+          showToast('Artículo optimizado');
+        } catch (e) {
+          console.error(e);
+          alert('No se pudo optimizar (error de red).');
+        }
       });
+    });
+
 
       // Render inicial
       renderSavedArticles();

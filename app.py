@@ -1,10 +1,8 @@
 # -*- coding: utf-8 -*-
 import os
-import re
-import csv
 import io
-import time
-from flask import Flask, render_template, request, redirect, url_for, session, jsonify, send_from_directory, abort, make_response
+import csv
+from flask import Flask, Response, render_template, request, redirect, url_for, session, jsonify, json 
 
 # --- módulos propios ---
 import storage
@@ -12,17 +10,42 @@ import ideas  # generar_ideas_para_keyword, generar_articulo_para_keyword, optim
 from models import crear_usuario, buscar_usuario_por_email
 from utils import hashear_password, verificar_password
 
+# --- Normalizar Content-Type JSON para tests muy estrictos ---
+JSON_ENDPOINTS = {
+    "/generar-articulo",
+    "/api/optimizar-articulo",
+    "/api/counters",
+    "/eliminar-idea",
+    "/api/cambiar-estado-articulo",
+    "/api/eliminar_articulo",
+    "/api/diagnostico",
+    "/api/whoami-openai",
+}
+
 # ------------------------------------------------------
 # CONFIG FLASK
 # ------------------------------------------------------
 app = Flask(__name__)
 app.secret_key = os.environ.get("SCIDATA_SECRET", "dev_secret_key")
 
+@app.after_request
+def force_plain_json(resp):
+    try:
+        # Si el endpoint es de nuestra API y ya es JSON, forzar exactamente application/json
+        if request.path in JSON_ENDPOINTS:
+            ct = resp.headers.get("Content-Type", "")
+            if ct.startswith("application/json"):
+                resp.headers["Content-Type"] = "application/json"
+    except Exception:
+        pass
+    return resp
+
 UPLOAD_FOLDER = os.path.join("data", "uploads")
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 app.config["UPLOAD_FOLDER"] = UPLOAD_FOLDER
 
 ESTADOS_VALIDOS = {"borrador", "revisado", "publicado", "archivado"}
+
 
 # ------------------------------------------------------
 # HELPERS CONTADORES (persistentes con fallback)
@@ -44,8 +67,7 @@ def _total_ideas_persistente(email: str, ideas_list: list) -> int:
 
 def _total_articulos_persistente(email: str, ideas_list: list) -> int:
     """
-    Persistente de artículos con fallback a conteo por JSON (sumando
-    'articulos' o el campo legacy 'articulo').
+    Cuenta persistente de artículos con fallback a conteo por JSON.
     """
     fallback = 0
     try:
@@ -61,29 +83,13 @@ def _total_articulos_persistente(email: str, ideas_list: list) -> int:
         pass
     return fallback
 
-
-def _merge_ideas(existing: list, nuevas: list) -> list:
-    """Fusiona por keyword (case-insensitive) sin duplicar (helper por si se necesitara localmente)."""
-    if not isinstance(existing, list):
-        existing = []
-    if not isinstance(nuevas, list):
-        nuevas = []
-
-    norm = lambda s: (s or "").strip().lower()
-    vistos = {norm(i.get("keyword")): idx for idx, i in enumerate(existing) if isinstance(i, dict)}
-
-    for item in nuevas:
-        if not isinstance(item, dict):
-            continue
-        k = norm(item.get("keyword"))
-        if not k:
-            continue
-        if k in vistos:
-            existing[vistos[k]] = item
-        else:
-            existing.append(item)
-            vistos[k] = len(existing) - 1
-    return existing
+def json_plain(payload: dict, status: int = 200) -> Response:
+    # Fuerza exactamente Content-Type: application/json (sin charset)
+    return Response(
+        json.dumps(payload, ensure_ascii=False),
+        status=status,
+        content_type="application/json"
+    )
 
 
 # ------------------------------------------------------
@@ -156,57 +162,50 @@ def dashboard():
     email = session["email"]
     nombre = session.get("usuario") or "Usuario"
 
-    # --- POST: generar desde formulario o CSV ---
+    # --- POST: keyword o CSV ---
     if request.method == "POST":
         pais = (request.form.get("pais") or "").strip()
         keyword = (request.form.get("keyword") or "").strip()
 
-        # Si viene CSV
+        # ¿CSV subido?
         if "csv" in request.files and request.files["csv"].filename:
+            file = request.files["csv"]
             try:
-                file = request.files["csv"]
-                # leer contenido completo seguro (sin TextIOWrapper)
-                file.stream.seek(0)
+                # Evitar problema de SpooledTemporaryFile sin .readable():
                 raw = file.read()
-                try:
-                    text = raw.decode("utf-8", errors="ignore")
-                except Exception:
-                    text = raw.decode("latin-1", errors="ignore")
-                reader = csv.DictReader(io.StringIO(text))
-
-                nuevas_ideas = []
-                for row in reader:
-                    kw = (row.get("tendencia") or "").strip()
-                    pa = (row.get("pais") or pais or "").strip()
-                    if not kw:
-                        continue
-                    try:
-                        nuevas_ideas.extend(
-                            ideas.generar_ideas_para_keyword(kw, pa or "Argentina")
-                        )
-                    except Exception as e:
-                        print("[WARN] generar_ideas_para_keyword CSV:", e)
-
-                # persistencia + contador (sólo suma las nuevas)
-                storage.agregar_ideas_usuario(email, nuevas_ideas)
+                txt = raw.decode("utf-8", errors="ignore")
+                reader = csv.DictReader(io.StringIO(txt))
             except Exception as e:
-                print("[ERROR] carga CSV:", e)
+                print("[ERROR] leyendo CSV:", e)
+                return redirect(url_for("dashboard"))
 
+            nuevas_ideas = []
+            for row in reader:
+                kw = (row.get("tendencia") or "").strip()
+                pa = (row.get("pais") or pais or "").strip()
+                if not kw:
+                    continue
+                try:
+                    nuevas_ideas.extend(
+                        ideas.generar_ideas_para_keyword(kw, pa or "Argentina")
+                    )
+                except Exception as ex:
+                    print("[WARN] generar_ideas_para_keyword CSV:", ex)
+
+            # merge + persistencia + contador (solo ideas NUEVAS)
+            storage.agregar_ideas_usuario(email, nuevas_ideas)
             return redirect(url_for("dashboard"))
 
-        # Si vino keyword simple
+        # ¿keyword simple?
         if keyword:
             try:
-                nuevas = ideas.generar_ideas_para_keyword(keyword, pais or "Argentina")
+                nuevas_ideas = ideas.generar_ideas_para_keyword(keyword, pais or "Argentina")
             except Exception as e:
                 print("[WARN] generar_ideas_para_keyword form:", e)
-                nuevas = []
+                nuevas_ideas = []
 
-            storage.agregar_ideas_usuario(email, nuevas)
+            storage.agregar_ideas_usuario(email, nuevas_ideas)
             return redirect(url_for("dashboard"))
-
-        # Si no vino nada, simplemente recargamos
-        return redirect(url_for("dashboard"))
 
     # --- GET: render ---
     ideas_list = storage.cargar_ideas_usuario(email)
@@ -244,27 +243,29 @@ def api_counters():
 #   request: { keyword: "..." }
 #   response: { id, html, estado, created_at }
 # ------------------------------------------------------
+
 @app.post("/generar-articulo")
 def generar_articulo():
     if "email" not in session:
-        return jsonify(error="not_authenticated"), 401
+        # JSON válido + MIME correcto
+        payload = {"ok": False, "error": "not_authenticated"}
+        return Response(json.dumps(payload, ensure_ascii=False), status=401, mimetype="application/json")
 
     data = request.get_json(silent=True) or {}
     keyword = (data.get("keyword") or "").strip()
-
     if not keyword:
-        return jsonify(error="bad_request"), 400
+        payload = {"ok": False, "error": "bad_request"}
+        return Response(json.dumps(payload, ensure_ascii=False), status=400, mimetype="application/json")
 
     try:
         res = ideas.generar_articulo_para_keyword(keyword)
         html = (res or {}).get("html") or ""
     except Exception as e:
         print("[WARN] generar_articulo_para_keyword:", e)
-        html = f"<article><h2>{keyword}</h2><p>Contenido generado para «{keyword}».</p></article>"
+        html = f"<article><h1>{keyword}</h1><p>Contenido generado para «{keyword}».</p></article>"
 
     email = session["email"]
     articulo = storage.append_articulo_usuario(email, keyword, html, estado="borrador")
-
     # contador persistente de artículos +1 (no decrece)
     try:
         storage.incrementar_articulos_generados(email)
@@ -272,55 +273,18 @@ def generar_articulo():
         pass
 
     if not articulo:
-        return jsonify(error="persist_error"), 500
+        payload = {"ok": False, "error": "persist_error"}
+        return Response(json.dumps(payload, ensure_ascii=False), status=500, mimetype="application/json")
 
-    return jsonify({
-        "id": articulo["id"],
-        "html": articulo["html"],
+    # ✅ JSON estricto (los saltos de línea en html quedan escapados)
+    payload = {
+        "ok": True,
+        "id": articulo.get("id"),
+        "html": articulo.get("html", ""),
         "estado": articulo.get("estado", "borrador"),
         "created_at": articulo.get("created_at")
-    })
-
-
-# ------------------------------------------------------
-# API: optimizar artículo (AJAX)
-#   request: { html, keyword?, target_url? }
-#   response: { ok, html, files }
-# ------------------------------------------------------
-@app.post("/api/optimizar-articulo")
-def optimizar_articulo_api():
-    if "email" not in session:
-        return jsonify(ok=False, error="not_authenticated"), 401
-
-    data = request.get_json(silent=True) or {}
-    html_in    = (data.get("html") or "").strip()
-    keyword    = (data.get("keyword") or "").strip()
-    target_url = (data.get("target_url") or "").strip()
-
-    if not html_in:
-        return jsonify(ok=False, error="bad_request", detail="html vacío"), 400
-
-    try:
-        # Usa la función de ideas.py (online u offline según .env)
-        from ideas import optimizar_articulo_html as _opt
-        res = _opt(html=html_in, keyword=keyword, target_url=target_url)
-    except Exception as e:
-        print("[ERROR] optimizar_articulo_api import/exec:", e)
-        return jsonify(ok=False, error="ideas_module_error"), 500
-
-    html_out = (res or {}).get("html") or html_in
-    files    = (res or {}).get("files", {})
-
-    # Guardar como nueva versión (estado "revisado") para no perder la anterior
-    try:
-        storage.append_articulo_usuario(session["email"], keyword or "sin_keyword", html_out, estado="revisado")
-        # si querés contar optimizaciones como “artículos” históricos:
-        # storage.incrementar_articulos_generados(session["email"])
-    except Exception as e:
-        print("[WARN] persistir optimizado:", e)
-
-    return jsonify(ok=True, html=html_out, files=files)
-
+    }
+    return Response(json.dumps(payload, ensure_ascii=False), status=200, mimetype="application/json")
 
 # ------------------------------------------------------
 # API: eliminar idea completa (no descuenta totales)
@@ -377,13 +341,57 @@ def api_eliminar_articulo():
     ok = storage.eliminar_articulo_usuario(session["email"], keyword, articulo_id)
     return jsonify(ok=bool(ok))  # no tocamos contadores persistentes
 
+
+# ------------------------------------------------------
+# API: OPTIMIZAR ARTÍCULO (nombre que usa index.html)
+# ------------------------------------------------------
+@app.post("/api/optimizar-articulo")
+def optimizar_articulo_api():
+    """
+    request JSON: { html: "<article>...</article>", keyword: "kw", target_url: "https://..." }
+    response: { ok: true, html: "<article>...</article>", files: {} }
+    """
+    if "email" not in session:
+        return jsonify(ok=False, error="not_authenticated"), 401
+
+    data = request.get_json(silent=True) or {}
+    html_in = (data.get("html") or "").strip()
+    keyword = (data.get("keyword") or "").strip()
+    target_url = (data.get("target_url") or "").strip()
+
+    if not html_in:
+        return jsonify(ok=False, error="bad_request", detail="html vacío"), 400
+
+    try:
+        # Llama al optimizador (usa OpenAI si hay API key; si no, fallback)
+        result = ideas.optimizar_contenido_html(
+            html_in,
+            keyword=keyword,
+            target_url=target_url
+        )
+        html_out = (result or {}).get("html") or html_in
+        files = (result or {}).get("files", {})
+
+        # Guarda como nueva versión "revisado" para no perder la anterior
+        try:
+            storage.append_articulo_usuario(session["email"], keyword or "sin_keyword", html_out, estado="revisado")
+            # No sumamos al contador de artículos aquí (ya se sumó al crear el original).
+        except Exception as e:
+            print("[WARN] persistir optimizado:", e)
+
+        return jsonify(ok=True, html=html_out, files=files)
+    except Exception as e:
+        print("[ERROR] optimizar_articulo_api:", e)
+        return jsonify(ok=False, error="server_error"), 500
+
+
 # ------------------------------------------------------
 # API: diagnóstico (OpenAI, env, etc.)
 # ------------------------------------------------------
 @app.get("/api/diagnostico")
 def api_diagnostico():
+    # Leemos lo que ya carga ideas.py (que hace load_dotenv)
     try:
-        # ideas.py ya hace load_dotenv al importarse
         from ideas import OPENAI_API_KEY, OPENAI_MODEL, client as openai_client
     except Exception:
         OPENAI_API_KEY, OPENAI_MODEL, openai_client = "", "", None
@@ -394,9 +402,9 @@ def api_diagnostico():
 
     return jsonify(
         ok=True,
-        openai_enabled=openai_enabled,   # True si el cliente quedó instanciado
-        api_key_present=api_key_present, # True si .env tiene KEY
-        model=(OPENAI_MODEL or None),    # p.ej. "gpt-4o-mini"
+        openai_enabled=openai_enabled,   # True si el cliente está instanciado
+        api_key_present=api_key_present, # True si hay KEY en .env
+        model=OPENAI_MODEL or None,      # p.ej. "gpt-4o-mini"
         mode=mode                        # "online" | "offline"
     )
 
@@ -405,7 +413,7 @@ def api_diagnostico():
 def api_whoami_openai():
     """
     Verificación fuerte: hace una llamada mínima a OpenAI.
-    Si funciona, estás 100% online (credenciales + conectividad).
+    Si funciona, ya estás 100% online.
     """
     try:
         from ideas import client as openai_client, OPENAI_MODEL
@@ -415,24 +423,25 @@ def api_whoami_openai():
     if not openai_client:
         return jsonify(ok=False, error="client_none"), 400
 
-    model = (OPENAI_MODEL or "gpt-4o-mini")
     try:
+        # llamada mínima y barata
         rsp = openai_client.chat.completions.create(
-            model=model,
+            model=OPENAI_MODEL or "gpt-4o-mini",
             messages=[{"role": "user", "content": "pong"}],
             max_tokens=5,
             temperature=0.0,
         )
-        return jsonify(ok=True, test="pong", model=model)
+        # si llega acá, hay conectividad + auth correctas
+        return jsonify(ok=True, test="pong", model=OPENAI_MODEL or "gpt-4o-mini")
     except Exception as e:
+        # devolvemos el error para depurar rápido
         return jsonify(ok=False, error=str(e)), 500
 
 
 # ------------------------------------------------------
-# RUN (dev)
+# RUN
 # ------------------------------------------------------
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
+    # host 127.0.0.1 para no chocar con AirPlay y evitar rebind en :5000 externo
     app.run(host="127.0.0.1", port=port, debug=True)
-
-

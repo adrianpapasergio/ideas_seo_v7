@@ -18,6 +18,9 @@ project_start.sh
 project_start.ps1
 qa_smoke.py
 
+# Exportaciones locales
+data/exports/
+
 
 # JSONs ignorados por defecto...
 *.json
